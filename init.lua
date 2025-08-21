@@ -174,7 +174,39 @@ vim.o.confirm = true
 vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 
 -- Diagnostic keymaps
+vim.keymap.set('n', '[d', vim.diagnostic.goto_prev, { desc = 'Go to previous [D]iagnostic message' })
+vim.keymap.set('n', ']d', vim.diagnostic.goto_next, { desc = 'Go to next [D]iagnostic message' })
+vim.keymap.set('n', '<F5>', ':w<CR>:vsplit | terminal cd %:p:h && javac %:t && java %:t:r<CR>', { noremap = true, silent = true })
 vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
+function RunCpp()
+  -- Get the current file name and folder
+  local file = vim.fn.expand '%'
+  local folder = vim.fn.expand '%:p:h'
+
+  -- Paths
+  local src_folder = folder .. '/src'
+  local include_folder = folder .. '/include'
+  local build_file = folder .. '/main.exe' -- Output executable
+
+  -- Compile command
+  local cmd = table.concat({
+    'g++',
+    file, -- main.cpp
+    src_folder .. '/*.cpp', -- all .cpp files in src
+    include_folder .. '/glad.c', -- glad source
+    '-I' .. include_folder, -- include folder
+    '-I D:/Libraries/glm-1.0.1', -- glm path
+    '-o',
+    build_file,
+    '-lglfw3 -lopengl32 -lgdi32', -- libraries
+  }, ' ')
+
+  -- Open a terminal and run the compile command
+  vim.cmd('vsplit | terminal ' .. cmd)
+end
+
+-- Map F6 to run the function
+vim.api.nvim_set_keymap('n', '<F6>', ':lua RunCpp()<CR>', { noremap = true, silent = false })
 
 -- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
 -- for people to discover. Otherwise, you normally need to press <C-\><C-n>, which
@@ -216,6 +248,14 @@ vim.api.nvim_create_autocmd('TextYankPost', {
   group = vim.api.nvim_create_augroup('kickstart-highlight-yank', { clear = true }),
   callback = function()
     vim.hl.on_yank()
+  end,
+})
+
+-- Automatically change to the directory of the current file
+vim.api.nvim_create_autocmd('BufEnter', {
+  pattern = '*',
+  callback = function()
+    vim.cmd 'cd %:p:h'
   end,
 })
 
@@ -671,7 +711,8 @@ require('lazy').setup({
       --  - settings (table): Override the default settings passed when initializing the server.
       --        For example, to see the options for `lua_ls`, you could go to: https://luals.github.io/wiki/settings/
       local servers = {
-        -- clangd = {},
+        clangd = {},
+        jdtls = {},
         -- gopls = {},
         -- pyright = {},
         -- rust_analyzer = {},
@@ -1013,4 +1054,3 @@ require('lazy').setup({
 })
 
 -- The line beneath this is called `modeline`. See `:help modeline`
--- vim: ts=2 sts=2 sw=2 et
