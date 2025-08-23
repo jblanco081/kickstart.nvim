@@ -92,28 +92,77 @@ vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 -- Diagnostic keymaps
 vim.keymap.set('n', '[d', vim.diagnostic.goto_prev, { desc = 'Go to previous [D]iagnostic message' })
 vim.keymap.set('n', ']d', vim.diagnostic.goto_next, { desc = 'Go to next [D]iagnostic message' })
-vim.keymap.set('n', '<F5>', ':w<CR>:vsplit | terminal cd %:p:h && javac %:t && java %:t:r<CR>', { noremap = true, silent = true })
 vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
 
-function RunCpp()
-  local file = vim.fn.expand '%'
-  local folder = vim.fn.expand '%:p:h'
-  local build_file = folder .. '/main.exe'
+vim.keymap.set('n', '<F5>', function()
+  local filetype = vim.bo.filetype
+  local file = vim.fn.expand '%' -- current file
+  local folder = vim.fn.expand '%:p:h' -- folder path
 
-  -- Open a terminal split
-  vim.cmd 'vsplit | terminal cmd'
+  if filetype == 'java' then
+    -- Save file, compile and run Java
+    vim.cmd ':w'
+    vim.cmd('vsplit | terminal cd "' .. folder .. '" && javac "' .. vim.fn.expand '%:t' .. '" && java "' .. vim.fn.expand '%:t:r' .. '"')
+  elseif filetype == 'cpp' then
+    -- Run the last built C++ executable
+    local project_name = vim.fn.fnamemodify(folder, ':t') -- folder name
+    local exe_path = folder .. '/build/' .. project_name
 
-  -- Compile command
-  local compile_cmd = 'g++ "' .. file .. '" -o "' .. build_file .. '"\r\n'
-  -- Run command
-  local run_cmd = '"' .. build_file .. '"\r\n'
+    if vim.fn.executable(exe_path) == 1 then
+      vim.cmd('vsplit | terminal "' .. exe_path .. '"')
+    else
+      print 'Executable not found. Press F6 to build first.'
+    end
+  else
+    print('F5: No run command defined for filetype: ' .. filetype)
+  end
+end, { noremap = true, silent = true })
 
-  -- Send commands to the terminal
-  vim.fn.chansend(vim.b.terminal_job_id, compile_cmd)
-  vim.fn.chansend(vim.b.terminal_job_id, run_cmd)
+function RunCppCMakeWindows()
+  -- Find project root by looking for CMakeLists.txt
+  local root_dir = vim.fn.finddir('CMakeLists.txt', vim.fn.getcwd() .. ';') -- search upward
+  if root_dir == '' then
+    print 'CMakeLists.txt not found in any parent directory!'
+    return
+  end
+  local folder = vim.fn.fnamemodify(root_dir, ':h') -- parent folder of CMakeLists.txt
+
+  local project_name = vim.fn.fnamemodify(folder, ':t')
+  local build_dir = folder .. '\\build'
+  local build_type = 'Debug'
+  local vcpkg_toolchain = 'C:\\libraries\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake'
+
+  if vim.fn.isdirectory(build_dir) == 0 then
+    vim.fn.mkdir(build_dir, 'p')
+  end
+
+  local exe_path = build_dir .. '\\' .. build_type .. '\\' .. project_name .. '.exe'
+
+  -- Configure if cache missing
+  local cmake_cmd = ''
+  if vim.fn.filereadable(build_dir .. '\\CMakeCache.txt') == 0 then
+    cmake_cmd = string.format(
+      'cmake -S "%s" -B "%s" -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_TOOLCHAIN_FILE="%s" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+      folder,
+      build_dir,
+      vcpkg_toolchain
+    )
+  end
+
+  local build_cmd = string.format('cmake --build "%s" --config %s', build_dir, build_type)
+
+  -- Run cmd.exe in a new window: configure, build, then run exe, keep window open
+  local full_cmd
+  if cmake_cmd ~= '' then
+    full_cmd = string.format('cmd.exe /c "start cmd.exe /k "%s && %s && "%s" & pause""', cmake_cmd, build_cmd, exe_path)
+  else
+    full_cmd = string.format('cmd.exe /c "start cmd.exe /k "%s && "%s" & pause""', build_cmd, exe_path)
+  end
+
+  vim.fn.system(full_cmd)
 end
 
-vim.api.nvim_set_keymap('n', '<F6>', ':lua RunCpp()<CR>', { noremap = true, silent = false })
+vim.api.nvim_set_keymap('n', '<F6>', ':lua RunCppCMakeWindows()<CR>', { noremap = true, silent = true })
 
 -- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
 -- for people to discover. Otherwise, you normally need to press <C-\><C-n>, which
@@ -469,6 +518,24 @@ require('lazy').setup({
       --    That is to say, every time a new file is opened that is associated with
       --    an lsp (for example, opening `main.rs` is associated with `rust_analyzer`) this
       --    function will be executed to configure the current buffer
+
+      local build_dir = vim.fn.getcwd() .. '/build'
+      local compile_commands_flag = {}
+
+      if vim.fn.filereadable(build_dir .. '/compile_commands.json') == 1 then
+        compile_commands_flag = { '--compile-commands-dir=' .. build_dir }
+      end
+
+      local nvim_lsp = require 'lspconfig'
+      nvim_lsp.clangd.setup {
+        cmd = vim.list_extend({ 'clangd' }, compile_commands_flag),
+        filetypes = { 'c', 'cpp', 'objc', 'objcpp' },
+        root_dir = function(fname)
+          return nvim_lsp.util.root_pattern 'CMakeLists.txt'(fname) or vim.fn.getcwd()
+        end,
+        capabilities = vim.lsp.protocol.make_client_capabilities(),
+      }
+
       vim.api.nvim_create_autocmd('LspAttach', {
         group = vim.api.nvim_create_augroup('kickstart-lsp-attach', { clear = true }),
         callback = function(event)
@@ -608,6 +675,37 @@ require('lazy').setup({
       --  So, we create new capabilities with blink.cmp, and then broadcast that to the servers.
       local capabilities = require('blink.cmp').get_lsp_capabilities()
 
+      local cmp = require 'cmp'
+
+      cmp.setup {
+        mapping = {
+          -- Navigate completion items
+          ['<C-j>'] = cmp.mapping.select_next_item { behavior = cmp.SelectBehavior.Select },
+          ['<C-k>'] = cmp.mapping.select_prev_item { behavior = cmp.SelectBehavior.Select },
+
+          -- Confirm selection with Enter
+          ['<CR>'] = cmp.mapping.confirm { select = true },
+
+          -- Optional: trigger completion manually
+          ['<C-Space>'] = cmp.mapping.complete(),
+
+          ['<Tab>'] = cmp.mapping(function(fallback)
+            if cmp.visible() then
+              cmp.confirm { select = true }
+            elseif require('luasnip').expand_or_jumpable() then
+              require('luasnip').expand_or_jump()
+            else
+              fallback()
+            end
+          end, { 'i', 's' }),
+        },
+        -- Optional: sources for completion
+        sources = cmp.config.sources {
+          { name = 'nvim_lsp' },
+          { name = 'buffer' },
+        },
+      }
+
       -- Enable the following language servers
       --  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
       --
@@ -647,7 +745,10 @@ require('lazy').setup({
           },
         },
       }
-
+      for server, config in pairs(servers) do
+        config.capabilities = capabilities -- attach LSP capabilities
+        require('lspconfig')[server].setup(config)
+      end
       -- Ensure the servers and tools above are installed
       --
       -- To check the current status of installed tools and/or manually install
@@ -928,6 +1029,7 @@ require('lazy').setup({
   require 'kickstart.plugins.neo-tree',
   require 'kickstart.plugins.gitsigns', -- adds gitsigns recommend keymaps
   require 'kickstart.plugins.color',
+  require 'kickstart.plugins.nvim-cmp',
 
   -- NOTE: The import below can automatically add your own plugins, configuration, etc from `lua/custom/plugins/*.lua`
   --    This is the easiest way to modularize your config.
